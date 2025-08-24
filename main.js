@@ -20,9 +20,6 @@ if (!gotTheLock) {
   });
 }
 
-let mainWindow;
-let pythonProcess = null;
-
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400,
@@ -33,7 +30,9 @@ function createWindow() {
       preload: path.join(__dirname, "preload.js"),
     },
     icon: path.join(__dirname, "src", "renderer", "assets", "icon.png"),
-    show: false, // Don't show until ready
+    show: false,
+    titleBarStyle: 'default',
+    webSecurity: false // Allow local file access for Monaco Editor
   });
 
   mainWindow.loadFile(path.join(__dirname, "src", "renderer", "index.html"));
@@ -53,6 +52,11 @@ function createWindow() {
       pythonProcess.kill();
     }
   });
+
+  // Open DevTools in development
+  if (process.env.NODE_ENV === 'development') {
+    mainWindow.webContents.openDevTools();
+  }
 }
 
 function createMenu() {
@@ -119,6 +123,20 @@ function createMenu() {
           click: () => mainWindow.webContents.send('menu-toggle-ai-mode')
         }
       ]
+    },
+    {
+      label: 'View',
+      submenu: [
+        { label: 'Reload', accelerator: 'CmdOrCtrl+R', role: 'reload' },
+        { label: 'Force Reload', accelerator: 'CmdOrCtrl+Shift+R', role: 'forceReload' },
+        { label: 'Toggle Developer Tools', accelerator: 'F12', role: 'toggleDevTools' },
+        { type: 'separator' },
+        { label: 'Actual Size', accelerator: 'CmdOrCtrl+0', role: 'resetZoom' },
+        { label: 'Zoom In', accelerator: 'CmdOrCtrl+Plus', role: 'zoomIn' },
+        { label: 'Zoom Out', accelerator: 'CmdOrCtrl+-', role: 'zoomOut' },
+        { type: 'separator' },
+        { label: 'Toggle Fullscreen', accelerator: 'F11', role: 'togglefullscreen' }
+      ]
     }
   ];
 
@@ -132,6 +150,10 @@ function startPythonBackend() {
   // Check if Python script exists
   if (!require('fs').existsSync(pythonScript)) {
     console.error('Python backend script not found:', pythonScript);
+    mainWindow.webContents.send('python-status', { 
+      status: 'error', 
+      message: 'Python backend script not found' 
+    });
     return;
   }
   
@@ -151,46 +173,77 @@ function startPythonBackend() {
   
   if (!pythonCmd) {
     console.error('Python not found in PATH');
-    if (mainWindow) {
-      mainWindow.webContents.send('python-error', 'Python not found');
-    }
+    mainWindow.webContents.send('python-status', { 
+      status: 'error', 
+      message: 'Python not found in PATH' 
+    });
     return;
   }
   
   console.log(`Starting Python backend with: ${pythonCmd}`);
+  mainWindow.webContents.send('python-status', { 
+    status: 'starting', 
+    message: 'Starting Python backend...' 
+  });
   
   pythonProcess = spawn(pythonCmd, [pythonScript], {
     cwd: path.join(__dirname, "src", "backend"),
-    stdio: ['pipe', 'pipe', 'pipe']
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, PYTHONPATH: path.join(__dirname, "src", "backend") }
   });
 
   pythonProcess.stdout.on('data', (data) => {
-    console.log(`Python Backend: ${data.toString().trim()}`);
+    const output = data.toString().trim();
+    console.log(`Python Backend: ${output}`);
+    
+    if (output.includes('Backend server started')) {
+      mainWindow.webContents.send('python-status', { 
+        status: 'running', 
+        message: 'Python backend is running' 
+      });
+    }
   });
 
   pythonProcess.stderr.on('data', (data) => {
-    console.error(`Python Backend Error: ${data.toString().trim()}`);
+    const error = data.toString().trim();
+    console.error(`Python Backend Error: ${error}`);
+    mainWindow.webContents.send('python-status', { 
+      status: 'error', 
+      message: `Backend error: ${error}` 
+    });
   });
 
   pythonProcess.on('close', (code) => {
     console.log(`Python backend exited with code ${code}`);
     pythonProcess = null;
+    mainWindow.webContents.send('python-status', { 
+      status: 'stopped', 
+      message: `Backend stopped (code: ${code})` 
+    });
   });
   
   pythonProcess.on('error', (error) => {
     console.error('Failed to start Python backend:', error);
     pythonProcess = null;
+    mainWindow.webContents.send('python-status', { 
+      status: 'error', 
+      message: `Failed to start backend: ${error.message}` 
+    });
   });
 }
 
-// File operations with better error handling
+// File operations with comprehensive error handling
 ipcMain.handle('read-file', async (event, filePath) => {
   try {
     if (!filePath || typeof filePath !== 'string') {
       throw new Error('Invalid file path');
     }
-    const content = await fs.readFile(filePath, 'utf-8');
-    return { success: true, content };
+    
+    // Security check - ensure path is within reasonable bounds
+    const resolvedPath = path.resolve(filePath);
+    const content = await fs.readFile(resolvedPath, 'utf-8');
+    
+    return { success: true, content, path: resolvedPath };
   } catch (error) {
     console.error('Read file error:', error);
     return { success: false, error: error.message };
@@ -206,12 +259,14 @@ ipcMain.handle('write-file', async (event, filePath, content) => {
       content = '';
     }
     
+    const resolvedPath = path.resolve(filePath);
+    
     // Ensure directory exists
-    const dir = path.dirname(filePath);
+    const dir = path.dirname(resolvedPath);
     await fs.mkdir(dir, { recursive: true });
     
-    await fs.writeFile(filePath, content.toString(), 'utf-8');
-    return { success: true };
+    await fs.writeFile(resolvedPath, content.toString(), 'utf-8');
+    return { success: true, path: resolvedPath };
   } catch (error) {
     console.error('Write file error:', error);
     return { success: false, error: error.message };
@@ -224,13 +279,16 @@ ipcMain.handle('delete-file', async (event, filePath) => {
       throw new Error('Invalid file path');
     }
     
-    const stats = await fs.stat(filePath);
+    const resolvedPath = path.resolve(filePath);
+    const stats = await fs.stat(resolvedPath);
+    
     if (stats.isDirectory()) {
-      await fs.rmdir(filePath, { recursive: true });
+      await fs.rmdir(resolvedPath, { recursive: true });
     } else {
-      await fs.unlink(filePath);
+      await fs.unlink(resolvedPath);
     }
-    return { success: true };
+    
+    return { success: true, path: resolvedPath };
   } catch (error) {
     console.error('Delete file error:', error);
     return { success: false, error: error.message };
@@ -242,8 +300,11 @@ ipcMain.handle('create-directory', async (event, dirPath) => {
     if (!dirPath || typeof dirPath !== 'string') {
       throw new Error('Invalid directory path');
     }
-    await fs.mkdir(dirPath, { recursive: true });
-    return { success: true };
+    
+    const resolvedPath = path.resolve(dirPath);
+    await fs.mkdir(resolvedPath, { recursive: true });
+    
+    return { success: true, path: resolvedPath };
   } catch (error) {
     console.error('Create directory error:', error);
     return { success: false, error: error.message };
@@ -256,58 +317,114 @@ ipcMain.handle('read-directory', async (event, dirPath) => {
       throw new Error('Invalid directory path');
     }
     
-    const entries = await fs.readdir(dirPath, { withFileTypes: true });
+    const resolvedPath = path.resolve(dirPath);
+    const entries = await fs.readdir(resolvedPath, { withFileTypes: true });
+    
     const items = entries.map(entry => ({
       name: entry.name,
       isDirectory: entry.isDirectory(),
-      path: path.join(dirPath, entry.name)
+      isFile: entry.isFile(),
+      path: path.join(resolvedPath, entry.name),
+      size: 0, // Will be populated if needed
+      modified: null // Will be populated if needed
     }));
-    return { success: true, items };
+    
+    // Sort: directories first, then files, alphabetically
+    items.sort((a, b) => {
+      if (a.isDirectory && !b.isDirectory) return -1;
+      if (!a.isDirectory && b.isDirectory) return 1;
+      return a.name.localeCompare(b.name, undefined, { numeric: true });
+    });
+    
+    return { success: true, items, path: resolvedPath };
   } catch (error) {
     console.error('Read directory error:', error);
     return { success: false, error: error.message };
   }
 });
 
+ipcMain.handle('get-file-stats', async (event, filePath) => {
+  try {
+    if (!filePath || typeof filePath !== 'string') {
+      throw new Error('Invalid file path');
+    }
+    
+    const resolvedPath = path.resolve(filePath);
+    const stats = await fs.stat(resolvedPath);
+    
+    return {
+      success: true,
+      stats: {
+        size: stats.size,
+        modified: stats.mtime,
+        created: stats.birthtime,
+        isDirectory: stats.isDirectory(),
+        isFile: stats.isFile()
+      }
+    };
+  } catch (error) {
+    console.error('Get file stats error:', error);
+    return { success: false, error: error.message };
+  }
+});
+
 // Dialog operations
 ipcMain.handle('show-open-dialog', async () => {
-  const result = await dialog.showOpenDialog(mainWindow, {
-    properties: ['openFile'],
-    filters: [
-      { name: 'All Files', extensions: ['*'] },
-      { name: 'JavaScript', extensions: ['js', 'jsx'] },
-      { name: 'Python', extensions: ['py'] },
-      { name: 'HTML', extensions: ['html', 'htm'] },
-      { name: 'CSS', extensions: ['css'] },
-      { name: 'JSON', extensions: ['json'] },
-      { name: 'Text', extensions: ['txt', 'md'] }
-    ]
-  });
-  return result;
+  try {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openFile'],
+      filters: [
+        { name: 'All Files', extensions: ['*'] },
+        { name: 'JavaScript', extensions: ['js', 'jsx', 'ts', 'tsx'] },
+        { name: 'Python', extensions: ['py', 'pyx', 'pyw'] },
+        { name: 'Web Files', extensions: ['html', 'htm', 'css', 'scss', 'sass'] },
+        { name: 'Data Files', extensions: ['json', 'xml', 'yaml', 'yml'] },
+        { name: 'C/C++', extensions: ['c', 'cpp', 'h', 'hpp'] },
+        { name: 'Java', extensions: ['java', 'class', 'jar'] },
+        { name: 'Text Files', extensions: ['txt', 'md', 'rst'] }
+      ]
+    });
+    return result;
+  } catch (error) {
+    console.error('Open dialog error:', error);
+    return { canceled: true, error: error.message };
+  }
 });
 
 ipcMain.handle('show-save-dialog', async () => {
-  const result = await dialog.showSaveDialog(mainWindow, {
-    filters: [
-      { name: 'All Files', extensions: ['*'] },
-      { name: 'JavaScript', extensions: ['js', 'jsx'] },
-      { name: 'Python', extensions: ['py'] },
-      { name: 'HTML', extensions: ['html', 'htm'] },
-      { name: 'CSS', extensions: ['css'] },
-      { name: 'JSON', extensions: ['json'] },
-      { name: 'Text', extensions: ['txt', 'md'] }
-    ]
-  });
-  return result;
+  try {
+    const result = await dialog.showSaveDialog(mainWindow, {
+      filters: [
+        { name: 'All Files', extensions: ['*'] },
+        { name: 'JavaScript', extensions: ['js', 'jsx', 'ts', 'tsx'] },
+        { name: 'Python', extensions: ['py', 'pyx', 'pyw'] },
+        { name: 'Web Files', extensions: ['html', 'htm', 'css', 'scss', 'sass'] },
+        { name: 'Data Files', extensions: ['json', 'xml', 'yaml', 'yml'] },
+        { name: 'C/C++', extensions: ['c', 'cpp', 'h', 'hpp'] },
+        { name: 'Java', extensions: ['java'] },
+        { name: 'Text Files', extensions: ['txt', 'md', 'rst'] }
+      ]
+    });
+    return result;
+  } catch (error) {
+    console.error('Save dialog error:', error);
+    return { canceled: true, error: error.message };
+  }
 });
 
 ipcMain.handle('show-open-folder-dialog', async () => {
-  const result = await dialog.showOpenDialog(mainWindow, {
-    properties: ['openDirectory']
-  });
-  return result;
+  try {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openDirectory']
+    });
+    return result;
+  } catch (error) {
+    console.error('Open folder dialog error:', error);
+    return { canceled: true, error: error.message };
+  }
 });
 
+// App lifecycle
 app.whenReady().then(() => {
   createWindow();
   

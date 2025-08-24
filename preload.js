@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   deleteFile: (filePath) => ipcRenderer.invoke('delete-file', filePath),
   createDirectory: (dirPath) => ipcRenderer.invoke('create-directory', dirPath),
   readDirectory: (dirPath) => ipcRenderer.invoke('read-directory', dirPath),
+  getFileStats: (filePath) => ipcRenderer.invoke('get-file-stats', filePath),
   
   // Dialog operations
   showOpenDialog: () => ipcRenderer.invoke('show-open-dialog'),
@@ -17,19 +18,58 @@ contextBridge.exposeInMainWorld('electronAPI', {
   
   // Menu event listeners
   onMenuAction: (callback) => {
-    ipcRenderer.on('menu-new-file', callback);
-    ipcRenderer.on('menu-open-file', callback);
-    ipcRenderer.on('menu-save-file', callback);
-    ipcRenderer.on('menu-explain-code', callback);
-    ipcRenderer.on('menu-translate-code', callback);
-    ipcRenderer.on('menu-optimize-code', callback);
-    ipcRenderer.on('menu-toggle-ai-mode', callback);
+    const channels = [
+      'menu-new-file',
+      'menu-open-file', 
+      'menu-save-file',
+      'menu-explain-code',
+      'menu-translate-code', 
+      'menu-optimize-code',
+      'menu-toggle-ai-mode'
+    ];
+    
+    channels.forEach(channel => {
+      ipcRenderer.on(channel, (event) => {
+        callback(channel, event);
+      });
+    });
+  },
+  
+  // Python backend status
+  onPythonStatus: (callback) => {
+    ipcRenderer.on('python-status', (event, status) => {
+      callback(status);
+    });
   },
   
   // Remove listeners
-  removeAllListeners: (channel) => ipcRenderer.removeAllListeners(channel)
+  removeAllListeners: (channel) => ipcRenderer.removeAllListeners(channel),
+  
+  // Get platform info
+  platform: process.platform,
+  
+  // Version info
+  versions: {
+    node: process.versions.node,
+    chrome: process.versions.chrome,
+    electron: process.versions.electron
+  }
 });
 
+// Expose Node.js path utilities for the renderer
+contextBridge.exposeInMainWorld('pathAPI', {
+  join: (...args) => require('path').join(...args),
+  dirname: (path) => require('path').dirname(path),
+  basename: (path, ext) => require('path').basename(path, ext),
+  extname: (path) => require('path').extname(path),
+  resolve: (...args) => require('path').resolve(...args),
+  sep: require('path').sep
+});
+
+// Add console logging for debugging
 window.addEventListener("DOMContentLoaded", () => {
   console.log("Enhanced preload script loaded!");
+  console.log("Platform:", process.platform);
+  console.log("Node version:", process.versions.node);
+  console.log("Electron version:", process.versions.electron);
 });

@@ -1,52 +1,57 @@
 {
   "name": "ai-code-editor",
   "version": "1.0.0",
-  "description": "AI-powered code editor with offline capabilities",
+  "description": "AI-powered code editor with file operations and intelligent assistance",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
-    "build": "electron-builder",
+    "build": "node scripts/build.js",
+    "setup": "node setup-dev.js",
     "postinstall": "electron-builder install-app-deps"
   },
   "keywords": [
     "electron",
     "code-editor",
     "ai",
-    "monaco-editor"
+    "monaco-editor",
+    "python",
+    "websocket"
   ],
   "author": "AI Code Editor Team",
   "license": "MIT",
-  "devDependencies": {
-    "electron": "^27.0.0",
-    "electron-builder": "^24.6.4"
-  },
   "dependencies": {
+    "electron": "^27.0.0",
     "monaco-editor": "^0.44.0",
     "ws": "^8.14.2"
   },
-  "engines": {
-    "node": ">=16.0.0"
+  "devDependencies": {
+    "electron-builder": "^24.6.4"
   },
   "build": {
-    "appId": "com.aicodeeditor.app",
+    "appId": "com.ai-code-editor.app",
     "productName": "AI Code Editor",
     "directories": {
       "output": "dist"
     },
     "files": [
-      "**/*",
-      "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}",
-      "!**/node_modules/*/{test,__tests__,tests,powered-test,example,examples}",
-      "!**/node_modules/*.d.ts",
-      "!**/node_modules/.bin",
-      "!**/*.{iml,o,hprof,orig,pyc,pyo,rbc,swp,csproj,sln,xproj}",
-      "!.editorconfig",
-      "!**/._*",
-      "!**/{.DS_Store,.git,.hg,.svn,CVS,RCS,SCCS,.gitignore,.gitattributes}",
-      "!**/{__pycache__,thumbs.db,.flowconfig,.idea,.vs,.nyc_output}",
-      "!**/{appveyor.yml,.travis.yml,circle.yml}",
-      "!**/{npm-debug.log,yarn.lock,.yarn-integrity,.yarn-metadata.json}"
-    ]
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "src/renderer/assets/icon.ico"
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "src/renderer/assets/icon.icns"
+    },
+    "linux": {
+      "target": "AppImage",
+      "icon": "src/renderer/assets/icon.png"
+    }
   }
 }
